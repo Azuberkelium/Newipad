@@ -30,7 +30,7 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, getDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Ensure global variables are defined before use
+        // Global variables provided by the Canvas environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -42,12 +42,10 @@
 
         const state = {
             isAuthReady: false,
-            remainingTime: 0,
+            expirationTimestamp: 0,
             goodDeeds: 0,
             isPaused: false,
-            cardType: 'none',
-            cardPenaltyTime: 0,
-            lastUpdatedTimestamp: 0
+            timeAtPause: 0,
         };
 
         const elements = {
@@ -63,7 +61,8 @@
             passcodeBtn: document.getElementById('passcode-btn'),
             passcodeMessage: document.getElementById('passcode-message'),
             messageBox: document.getElementById('message-box'),
-            overlay: document.getElementById('overlay')
+            overlay: document.getElementById('overlay'),
+            timerStatus: document.getElementById('timer-status')
         };
         
         let targetAction = null;
@@ -72,9 +71,16 @@
         // Function to show a temporary message
         const showMessage = (text) => {
             elements.messageBox.textContent = text;
-            elements.messageBox.classList.remove('hidden');
+            elements.messageBox.classList.remove('hidden', 'bg-red-500', 'bg-blue-500');
+            
+            // Determine message color based on content
+            if (text.includes('No iPad time')) {
+                elements.messageBox.classList.add('bg-red-500');
+            } else {
+                elements.messageBox.classList.add('bg-blue-500');
+            }
+
             setTimeout(() => {
-                elements.messageBox.textContent = '';
                 elements.messageBox.classList.add('hidden');
             }, 2000);
         };
@@ -101,35 +107,33 @@
         // Function to update the timer display
         const updateDisplay = () => {
             const now = Date.now();
-            if (state.cardType !== 'none') {
-                const elapsedPenaltyTime = Math.max(0, now - state.cardPenaltyTime);
-                const remainingPenalty = (state.cardType === 'yellow' ? 12 * 3600 : 24 * 3600) - Math.floor(elapsedPenaltyTime / 1000);
-                const displaySeconds = Math.max(0, remainingPenalty);
-                const h = Math.floor(displaySeconds / 3600);
-                const m = Math.floor((displaySeconds % 3600) / 60);
-                const s = displaySeconds % 60;
-                elements.timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                showMessage(`- ${state.cardType === 'yellow' ? 12 : 24} hours remaining`);
-                return;
+            let remaining = 0;
+
+            if (state.isPaused) {
+                remaining = state.timeAtPause;
+                elements.timerStatus.textContent = '(Paused)';
+                elements.timerStatus.classList.remove('text-green-500', 'text-red-500');
+            } else {
+                remaining = Math.floor((state.expirationTimestamp - now) / 1000);
+                if (remaining < 0) {
+                    elements.timerStatus.textContent = '(Penalty)';
+                    elements.timerStatus.classList.remove('text-green-500');
+                    elements.timerStatus.classList.add('text-red-500');
+                } else {
+                    elements.timerStatus.textContent = '(Active)';
+                    elements.timerStatus.classList.remove('text-red-500');
+                    elements.timerStatus.classList.add('text-green-500');
+                }
             }
 
-            // Calculate remaining time for positive timers
-            let timePassed = 0;
-            if (!state.isPaused) {
-                timePassed = Math.floor((now - state.lastUpdatedTimestamp) / 1000);
-            }
-            let remaining = state.remainingTime - timePassed;
-            state.remainingTime = remaining;
-            
-            const displaySeconds = Math.max(0, remaining);
+            const displaySeconds = Math.abs(remaining);
+            const sign = remaining < 0 ? '-' : '';
             const h = Math.floor(displaySeconds / 3600);
             const m = Math.floor((displaySeconds % 3600) / 60);
             const s = displaySeconds % 60;
-            elements.timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            elements.timerDisplay.textContent = `${sign}${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 
-            if (remaining <= 0) {
-                clearInterval(intervalId);
-                elements.timerDisplay.textContent = '00:00:00';
+            if (remaining <= 0 && !state.isPaused) {
                 showMessage('No iPad time remaining.');
                 playAlarm();
             }
@@ -147,42 +151,46 @@
 
                     if (!currentData) {
                         currentData = {
-                            remainingTime: 0,
+                            expirationTimestamp: Date.now(),
                             goodDeeds: 0,
-                            isPaused: false,
-                            cardType: 'none',
-                            cardPenaltyTime: 0,
-                            lastUpdatedTimestamp: Date.now()
+                            isPaused: true,
+                            timeAtPause: 0
                         };
                     }
                     
                     const now = Date.now();
-                    
+                    let currentRemainingTime = currentData.isPaused ? currentData.timeAtPause : Math.floor((currentData.expirationTimestamp - now) / 1000);
+
                     // Logic to add time from good deeds or green card
                     if (updates.addTime) {
-                         // Override any negative time and penalties
-                        if (currentData.cardType !== 'none' || currentData.remainingTime <= 0) {
-                             currentData.remainingTime = 3600; // 1 hour
-                             currentData.cardType = 'none';
-                             currentData.cardPenaltyTime = 0;
+                        currentData.isPaused = false;
+                        if (currentRemainingTime < 0) {
+                            currentData.expirationTimestamp = now + 3600000; // 1 hour
                         } else {
-                            currentData.remainingTime += 3600; // Add 1 hour
+                            currentData.expirationTimestamp = now + currentRemainingTime * 1000 + 3600000;
                         }
+                        currentData.timeAtPause = 0;
+                        showMessage('1 hour added!');
                     }
 
                     // Logic for penalty cards
                     if (updates.card) {
-                        currentData.cardType = updates.card;
-                        currentData.cardPenaltyTime = now;
-                        currentData.remainingTime = 0;
                         currentData.isPaused = true;
+                        currentData.timeAtPause = (updates.card === 'yellow' ? -12 : -24) * 3600;
+                        showMessage(`Penalty applied: ${updates.card === 'yellow' ? '-12' : '-24'} hours`);
                     }
 
                     // Logic for pause/resume
                     if (updates.togglePause) {
-                        currentData.isPaused = !currentData.isPaused;
-                        if (currentData.isPaused) {
-                            currentData.remainingTime = currentData.remainingTime - Math.floor((now - currentData.lastUpdatedTimestamp) / 1000);
+                        const newPauseState = !currentData.isPaused;
+                        currentData.isPaused = newPauseState;
+                        if (newPauseState) {
+                            currentData.timeAtPause = currentRemainingTime;
+                            showMessage('Timer Paused.');
+                        } else {
+                            currentData.expirationTimestamp = now + currentRemainingTime * 1000;
+                            currentData.timeAtPause = 0;
+                            showMessage('Timer Resumed.');
                         }
                     }
 
@@ -191,20 +199,19 @@
                         currentData.goodDeeds += 1;
                         if (currentData.goodDeeds >= 5) {
                             currentData.goodDeeds = 0;
-                            // Add 1 hour, checking for override condition
-                            if (currentData.cardType !== 'none' || currentData.remainingTime <= 0) {
-                                currentData.remainingTime = 3600;
-                                currentData.cardType = 'none';
-                                currentData.cardPenaltyTime = 0;
+                            currentData.isPaused = false;
+                            if (currentRemainingTime < 0) {
+                                currentData.expirationTimestamp = now + 3600000;
                             } else {
-                                currentData.remainingTime += 3600;
+                                currentData.expirationTimestamp = now + currentRemainingTime * 1000 + 3600000;
                             }
+                            showMessage('Good deeds completed! 1 hour added.');
+                        } else {
+                            showMessage(`Good deed recorded. You have ${currentData.goodDeeds} of 5.`);
                         }
                     }
                     
-                    currentData.lastUpdatedTimestamp = now;
                     transaction.set(docRef, currentData);
-
                 });
             } catch (error) {
                 console.error("Error updating state: ", error);
@@ -294,12 +301,10 @@
                 const docSnap = await getDoc(docRef);
                 if (!docSnap.exists()) {
                     await setDoc(docRef, {
-                        remainingTime: 0,
+                        expirationTimestamp: Date.now(),
                         goodDeeds: 0,
                         isPaused: true,
-                        cardType: 'none',
-                        cardPenaltyTime: 0,
-                        lastUpdatedTimestamp: Date.now()
+                        timeAtPause: 0
                     });
                 }
                 
@@ -307,12 +312,10 @@
                 onSnapshot(docRef, (snapshot) => {
                     const data = snapshot.data();
                     if (data) {
-                        state.remainingTime = data.remainingTime;
+                        state.expirationTimestamp = data.expirationTimestamp;
                         state.goodDeeds = data.goodDeeds;
                         state.isPaused = data.isPaused;
-                        state.cardType = data.cardType;
-                        state.cardPenaltyTime = data.cardPenaltyTime;
-                        state.lastUpdatedTimestamp = data.lastUpdatedTimestamp;
+                        state.timeAtPause = data.timeAtPause;
 
                         elements.goodDeedsDisplay.textContent = state.goodDeeds;
                         elements.pauseResumeBtn.textContent = state.isPaused ? 'Resume' : 'Pause';
@@ -352,11 +355,11 @@
             <div id="timer-display" class="text-6xl font-extrabold text-blue-600">
                 00:00:00
             </div>
-            <p class="text-gray-500 font-medium mt-2">Time Remaining</p>
+            <p id="timer-status" class="text-gray-500 font-medium mt-2">(Paused)</p>
         </div>
         
         <!-- Message Box -->
-        <div id="message-box" class="message-box fixed top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-red-500 text-white font-bold rounded-full shadow-lg hidden"></div>
+        <div id="message-box" class="message-box fixed top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 text-white font-bold rounded-full shadow-lg hidden"></div>
 
         <!-- Good Deeds Counter -->
         <div class="flex flex-col items-center">
@@ -372,7 +375,7 @@
         <!-- Action Buttons -->
         <div class="grid grid-cols-2 gap-4 mt-6">
             <button id="pause-resume-btn" class="px-4 py-3 bg-yellow-500 text-white font-bold rounded-xl shadow-lg hover:bg-yellow-600 transition duration-200">
-                Pause
+                Resume
             </button>
             <button id="green-card-btn" class="px-4 py-3 bg-green-500 text-white font-bold rounded-xl shadow-lg hover:bg-green-600 transition duration-200">
                 Green Card (+1hr)

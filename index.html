@@ -46,6 +46,7 @@
             goodDeeds: 0,
             isPaused: false,
             timeAtPause: 0,
+            hasPlayedAlarm: false
         };
 
         const elements = {
@@ -133,9 +134,12 @@
             const s = displaySeconds % 60;
             elements.timerDisplay.textContent = `${sign}${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 
-            if (remaining <= 0 && !state.isPaused) {
+            if (remaining <= 0 && !state.isPaused && !state.hasPlayedAlarm) {
                 showMessage('No iPad time remaining.');
                 playAlarm();
+                state.hasPlayedAlarm = true; // Set flag to prevent repeated alarms
+            } else if (remaining > 0) {
+                state.hasPlayedAlarm = false; // Reset flag if time is added back
             }
         };
 
@@ -159,14 +163,17 @@
                     }
                     
                     const now = Date.now();
-                    let currentRemainingTime = currentData.isPaused ? currentData.timeAtPause : Math.floor((currentData.expirationTimestamp - now) / 1000);
+                    // Determine current time based on whether the timer is paused or active
+                    const currentRemainingTime = currentData.isPaused ? currentData.timeAtPause : Math.floor((currentData.expirationTimestamp - now) / 1000);
 
                     // Logic to add time from good deeds or green card
                     if (updates.addTime) {
                         currentData.isPaused = false;
                         if (currentRemainingTime < 0) {
-                            currentData.expirationTimestamp = now + 3600000; // 1 hour
+                            // Green card/good deeds override any negative time and set to a new hour
+                            currentData.expirationTimestamp = now + 3600000;
                         } else {
+                            // Add 1 hour to the existing time
                             currentData.expirationTimestamp = now + currentRemainingTime * 1000 + 3600000;
                         }
                         currentData.timeAtPause = 0;
@@ -201,8 +208,10 @@
                             currentData.goodDeeds = 0;
                             currentData.isPaused = false;
                             if (currentRemainingTime < 0) {
+                                // 5 good deeds override any negative time
                                 currentData.expirationTimestamp = now + 3600000;
                             } else {
+                                // Add 1 hour to the existing time
                                 currentData.expirationTimestamp = now + currentRemainingTime * 1000 + 3600000;
                             }
                             showMessage('Good deeds completed! 1 hour added.');

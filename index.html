@@ -49,6 +49,11 @@
             hasPlayedAlarm: false
         };
 
+        // Passcode state variables
+        let passcodeActive = false;
+        let passcodeEntryTime = 0;
+        const PASSCODE_DURATION = 60000; // 60 seconds
+
         const elements = {
             timerDisplay: document.getElementById('timer-display'),
             goodDeedsDisplay: document.getElementById('good-deeds-display'),
@@ -234,6 +239,10 @@
                 elements.overlay.classList.add('hidden');
                 elements.passcodeInput.value = '';
                 
+                // Set passcode to active for the duration
+                passcodeActive = true;
+                passcodeEntryTime = Date.now();
+
                 if (targetAction) {
                     targetAction();
                     targetAction = null;
@@ -243,8 +252,15 @@
             }
         };
 
-        // Function to show the passcode modal
+        // Function to show the passcode modal, with a 1-minute memory
         const showPasscodeModal = (callback) => {
+            // Check if passcode is still active
+            if (passcodeActive && (Date.now() - passcodeEntryTime) < PASSCODE_DURATION) {
+                callback(); // Execute the action directly
+                return;
+            }
+
+            // Otherwise, show the modal
             targetAction = callback;
             elements.passcodeModal.classList.remove('hidden');
             elements.overlay.classList.remove('hidden');
@@ -399,3 +415,4 @@
     </div>
 </body>
 </html>
+

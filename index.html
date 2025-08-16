@@ -9,11 +9,12 @@
     <style>
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6;
+            background-color: #1a202c; /* Dark mode background */
         }
         .passcode-input {
             width: 4rem;
             text-align: center;
+            color: #1a202c;
         }
         .message-box {
             animation: fadeInOut 2s ease-in-out forwards;
@@ -363,24 +364,24 @@
     
     <!-- Passcode Modal -->
     <div id="passcode-modal" class="fixed inset-0 flex items-center justify-center z-50 hidden">
-        <div class="bg-white p-8 rounded-lg shadow-xl text-center">
+        <div class="bg-gray-800 p-8 rounded-lg shadow-xl text-center text-gray-100">
             <h2 class="text-2xl font-bold mb-4">Enter Passcode</h2>
-            <input type="password" id="passcode-input" class="passcode-input p-2 border border-gray-300 rounded-lg text-lg" maxlength="4">
-            <p id="passcode-message" class="text-red-500 mt-2"></p>
-            <button id="passcode-btn" class="mt-4 px-6 py-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 transition duration-200">Submit</button>
+            <input type="password" id="passcode-input" class="passcode-input p-2 border border-gray-300 rounded-lg text-lg text-gray-900" maxlength="4">
+            <p id="passcode-message" class="text-red-400 mt-2"></p>
+            <button id="passcode-btn" class="mt-4 px-6 py-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition duration-200">Submit</button>
         </div>
     </div>
 
     <!-- Main App Container -->
-    <div class="bg-white p-8 rounded-2xl shadow-xl max-w-sm mx-auto w-full text-center space-y-6">
-        <h1 class="text-3xl font-bold text-gray-800">iPad Timer</h1>
+    <div class="bg-gray-800 p-8 rounded-2xl shadow-xl max-w-sm mx-auto w-full text-center space-y-6 text-gray-100">
+        <h1 class="text-3xl font-bold">iPad Timer</h1>
         
         <!-- Timer Display -->
         <div class="flex flex-col items-center">
-            <div id="timer-display" class="text-6xl font-extrabold text-blue-600">
+            <div id="timer-display" class="text-6xl font-extrabold text-blue-400">
                 00:00:00
             </div>
-            <p id="timer-status" class="text-gray-500 font-medium mt-2">(Paused)</p>
+            <p id="timer-status" class="text-gray-400 font-medium mt-2">(Paused)</p>
         </div>
         
         <!-- Message Box -->
@@ -389,8 +390,8 @@
         <!-- Good Deeds Counter -->
         <div class="flex flex-col items-center">
             <div class="flex items-center space-x-2">
-                <span class="text-4xl font-extrabold text-green-500" id="good-deeds-display">0</span>
-                <span class="text-gray-500 text-lg">Good Deeds</span>
+                <span class="text-4xl font-extrabold text-green-400" id="good-deeds-display">0</span>
+                <span class="text-gray-400 text-lg">Good Deeds</span>
             </div>
             <button id="good-deed-btn" class="mt-2 w-full px-4 py-3 bg-green-500 text-white font-bold rounded-xl shadow-lg hover:bg-green-600 transition duration-200">
                 Record Good Deed
@@ -415,4 +416,3 @@
     </div>
 </body>
 </html>
-

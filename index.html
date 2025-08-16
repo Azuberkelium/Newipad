@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iPad Timer Reward Chart</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .passcode-input {
+            width: 4rem;
+            text-align: center;
+        }
+        .message-box {
+            animation: fadeInOut 2s ease-in-out forwards;
+        }
+        @keyframes fadeInOut {
+            0% { opacity: 0; }
+            50% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+    </style>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, getDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Ensure global variables are defined before use
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app;
+        let db;
+        let auth;
+        let userId;
+
+        const state = {
+            isAuthReady: false,
+            remainingTime: 0,
+            goodDeeds: 0,
+            isPaused: false,
+            cardType: 'none',
+            cardPenaltyTime: 0,
+            lastUpdatedTimestamp: 0
+        };
+
+        const elements = {
+            timerDisplay: document.getElementById('timer-display'),
+            goodDeedsDisplay: document.getElementById('good-deeds-display'),
+            goodDeedBtn: document.getElementById('good-deed-btn'),
+            greenCardBtn: document.getElementById('green-card-btn'),
+            yellowCardBtn: document.getElementById('yellow-card-btn'),
+            redCardBtn: document.getElementById('red-card-btn'),
+            pauseResumeBtn: document.getElementById('pause-resume-btn'),
+            passcodeModal: document.getElementById('passcode-modal'),
+            passcodeInput: document.getElementById('passcode-input'),
+            passcodeBtn: document.getElementById('passcode-btn'),
+            passcodeMessage: document.getElementById('passcode-message'),
+            messageBox: document.getElementById('message-box'),
+            overlay: document.getElementById('overlay')
+        };
+        
+        let targetAction = null;
+        let intervalId = null;
+
+        // Function to show a temporary message
+        const showMessage = (text) => {
+            elements.messageBox.textContent = text;
+            elements.messageBox.classList.remove('hidden');
+            setTimeout(() => {
+                elements.messageBox.textContent = '';
+                elements.messageBox.classList.add('hidden');
+            }, 2000);
+        };
+
+        // Function to play a simple alarm sound
+        const playAlarm = () => {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4 note
+            gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            oscillator.start();
+            setTimeout(() => {
+                oscillator.stop();
+            }, 1000);
+        };
+        
+        // Function to update the timer display
+        const updateDisplay = () => {
+            const now = Date.now();
+            if (state.cardType !== 'none') {
+                const elapsedPenaltyTime = Math.max(0, now - state.cardPenaltyTime);
+                const remainingPenalty = (state.cardType === 'yellow' ? 12 * 3600 : 24 * 3600) - Math.floor(elapsedPenaltyTime / 1000);
+                const displaySeconds = Math.max(0, remainingPenalty);
+                const h = Math.floor(displaySeconds / 3600);
+                const m = Math.floor((displaySeconds % 3600) / 60);
+                const s = displaySeconds % 60;
+                elements.timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                showMessage(`- ${state.cardType === 'yellow' ? 12 : 24} hours remaining`);
+                return;
+            }
+
+            // Calculate remaining time for positive timers
+            let timePassed = 0;
+            if (!state.isPaused) {
+                timePassed = Math.floor((now - state.lastUpdatedTimestamp) / 1000);
+            }
+            let remaining = state.remainingTime - timePassed;
+            state.remainingTime = remaining;
+            
+            const displaySeconds = Math.max(0, remaining);
+            const h = Math.floor(displaySeconds / 3600);
+            const m = Math.floor((displaySeconds % 3600) / 60);
+            const s = displaySeconds % 60;
+            elements.timerDisplay.textContent = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+
+            if (remaining <= 0) {
+                clearInterval(intervalId);
+                elements.timerDisplay.textContent = '00:00:00';
+                showMessage('No iPad time remaining.');
+                playAlarm();
+            }
+        };
+
+        // Function to handle database updates for all actions
+        const updateState = async (updates) => {
+            if (!state.isAuthReady) return;
+            try {
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'timer-state');
+                
+                await runTransaction(db, async (transaction) => {
+                    const docSnap = await transaction.get(docRef);
+                    let currentData = docSnap.data();
+
+                    if (!currentData) {
+                        currentData = {
+                            remainingTime: 0,
+                            goodDeeds: 0,
+                            isPaused: false,
+                            cardType: 'none',
+                            cardPenaltyTime: 0,
+                            lastUpdatedTimestamp: Date.now()
+                        };
+                    }
+                    
+                    const now = Date.now();
+                    
+                    // Logic to add time from good deeds or green card
+                    if (updates.addTime) {
+                         // Override any negative time and penalties
+                        if (currentData.cardType !== 'none' || currentData.remainingTime <= 0) {
+                             currentData.remainingTime = 3600; // 1 hour
+                             currentData.cardType = 'none';
+                             currentData.cardPenaltyTime = 0;
+                        } else {
+                            currentData.remainingTime += 3600; // Add 1 hour
+                        }
+                    }
+
+                    // Logic for penalty cards
+                    if (updates.card) {
+                        currentData.cardType = updates.card;
+                        currentData.cardPenaltyTime = now;
+                        currentData.remainingTime = 0;
+                        currentData.isPaused = true;
+                    }
+
+                    // Logic for pause/resume
+                    if (updates.togglePause) {
+                        currentData.isPaused = !currentData.isPaused;
+                        if (currentData.isPaused) {
+                            currentData.remainingTime = currentData.remainingTime - Math.floor((now - currentData.lastUpdatedTimestamp) / 1000);
+                        }
+                    }
+
+                    // Logic for good deeds
+                    if (updates.goodDeed) {
+                        currentData.goodDeeds += 1;
+                        if (currentData.goodDeeds >= 5) {
+                            currentData.goodDeeds = 0;
+                            // Add 1 hour, checking for override condition
+                            if (currentData.cardType !== 'none' || currentData.remainingTime <= 0) {
+                                currentData.remainingTime = 3600;
+                                currentData.cardType = 'none';
+                                currentData.cardPenaltyTime = 0;
+                            } else {
+                                currentData.remainingTime += 3600;
+                            }
+                        }
+                    }
+                    
+                    currentData.lastUpdatedTimestamp = now;
+                    transaction.set(docRef, currentData);
+
+                });
+            } catch (error) {
+                console.error("Error updating state: ", error);
+            }
+        };
+
+        // Passcode verification logic
+        const verifyPasscode = () => {
+            if (elements.passcodeInput.value === '1606') {
+                elements.passcodeModal.classList.add('hidden');
+                elements.overlay.classList.add('hidden');
+                elements.passcodeInput.value = '';
+                
+                if (targetAction) {
+                    targetAction();
+                    targetAction = null;
+                }
+            } else {
+                elements.passcodeMessage.textContent = 'Incorrect passcode.';
+            }
+        };
+
+        // Function to show the passcode modal
+        const showPasscodeModal = (callback) => {
+            targetAction = callback;
+            elements.passcodeModal.classList.remove('hidden');
+            elements.overlay.classList.remove('hidden');
+            elements.passcodeMessage.textContent = '';
+        };
+
+        // Event listeners for buttons
+        elements.goodDeedBtn.addEventListener('click', () => {
+            updateState({ goodDeed: true });
+        });
+        elements.greenCardBtn.addEventListener('click', () => {
+            showPasscodeModal(() => updateState({ addTime: true }));
+        });
+        elements.yellowCardBtn.addEventListener('click', () => {
+            showPasscodeModal(() => updateState({ card: 'yellow' }));
+        });
+        elements.redCardBtn.addEventListener('click', () => {
+            showPasscodeModal(() => updateState({ card: 'red' }));
+        });
+        elements.pauseResumeBtn.addEventListener('click', () => {
+            showPasscodeModal(() => updateState({ togglePause: true }));
+        });
+        elements.passcodeBtn.addEventListener('click', verifyPasscode);
+        
+        // Listen for "Enter" key in the passcode input
+        elements.passcodeInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                verifyPasscode();
+            }
+        });
+        
+        // Initialize Firebase and set up listener
+        window.addEventListener('load', async () => {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+            } catch (error) {
+                console.error('Error initializing Firebase:', error);
+                return;
+            }
+            
+            // Sign in to Firebase
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Auth error:", error);
+            }
+            
+            // Wait for authentication state to be ready
+            onAuthStateChanged(auth, async (user) => {
+                state.isAuthReady = true;
+                userId = user?.uid || crypto.randomUUID();
+                
+                // Firestore document reference
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'timer-state');
+                
+                // Initial check for the document, create if it doesn't exist
+                const docSnap = await getDoc(docRef);
+                if (!docSnap.exists()) {
+                    await setDoc(docRef, {
+                        remainingTime: 0,
+                        goodDeeds: 0,
+                        isPaused: true,
+                        cardType: 'none',
+                        cardPenaltyTime: 0,
+                        lastUpdatedTimestamp: Date.now()
+                    });
+                }
+                
+                // Set up real-time listener
+                onSnapshot(docRef, (snapshot) => {
+                    const data = snapshot.data();
+                    if (data) {
+                        state.remainingTime = data.remainingTime;
+                        state.goodDeeds = data.goodDeeds;
+                        state.isPaused = data.isPaused;
+                        state.cardType = data.cardType;
+                        state.cardPenaltyTime = data.cardPenaltyTime;
+                        state.lastUpdatedTimestamp = data.lastUpdatedTimestamp;
+
+                        elements.goodDeedsDisplay.textContent = state.goodDeeds;
+                        elements.pauseResumeBtn.textContent = state.isPaused ? 'Resume' : 'Pause';
+                        
+                        // Stop any existing timer to prevent duplicates
+                        if (intervalId) {
+                            clearInterval(intervalId);
+                        }
+                        intervalId = setInterval(updateDisplay, 1000);
+                        updateDisplay();
+                    }
+                });
+            });
+        });
+    </script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <!-- Overlay for modal -->
+    <div id="overlay" class="fixed inset-0 bg-black bg-opacity-50 hidden z-40"></div>
+    
+    <!-- Passcode Modal -->
+    <div id="passcode-modal" class="fixed inset-0 flex items-center justify-center z-50 hidden">
+        <div class="bg-white p-8 rounded-lg shadow-xl text-center">
+            <h2 class="text-2xl font-bold mb-4">Enter Passcode</h2>
+            <input type="password" id="passcode-input" class="passcode-input p-2 border border-gray-300 rounded-lg text-lg" maxlength="4">
+            <p id="passcode-message" class="text-red-500 mt-2"></p>
+            <button id="passcode-btn" class="mt-4 px-6 py-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 transition duration-200">Submit</button>
+        </div>
+    </div>
+
+    <!-- Main App Container -->
+    <div class="bg-white p-8 rounded-2xl shadow-xl max-w-sm mx-auto w-full text-center space-y-6">
+        <h1 class="text-3xl font-bold text-gray-800">iPad Timer</h1>
+        
+        <!-- Timer Display -->
+        <div class="flex flex-col items-center">
+            <div id="timer-display" class="text-6xl font-extrabold text-blue-600">
+                00:00:00
+            </div>
+            <p class="text-gray-500 font-medium mt-2">Time Remaining</p>
+        </div>
+        
+        <!-- Message Box -->
+        <div id="message-box" class="message-box fixed top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-red-500 text-white font-bold rounded-full shadow-lg hidden"></div>
+
+        <!-- Good Deeds Counter -->
+        <div class="flex flex-col items-center">
+            <div class="flex items-center space-x-2">
+                <span class="text-4xl font-extrabold text-green-500" id="good-deeds-display">0</span>
+                <span class="text-gray-500 text-lg">Good Deeds</span>
+            </div>
+            <button id="good-deed-btn" class="mt-2 w-full px-4 py-3 bg-green-500 text-white font-bold rounded-xl shadow-lg hover:bg-green-600 transition duration-200">
+                Record Good Deed
+            </button>
+        </div>
+        
+        <!-- Action Buttons -->
+        <div class="grid grid-cols-2 gap-4 mt-6">
+            <button id="pause-resume-btn" class="px-4 py-3 bg-yellow-500 text-white font-bold rounded-xl shadow-lg hover:bg-yellow-600 transition duration-200">
+                Pause
+            </button>
+            <button id="green-card-btn" class="px-4 py-3 bg-green-500 text-white font-bold rounded-xl shadow-lg hover:bg-green-600 transition duration-200">
+                Green Card (+1hr)
+            </button>
+            <button id="yellow-card-btn" class="px-4 py-3 bg-yellow-400 text-white font-bold rounded-xl shadow-lg hover:bg-yellow-500 transition duration-200">
+                Yellow Card (-12hr)
+            </button>
+            <button id="red-card-btn" class="px-4 py-3 bg-red-500 text-white font-bold rounded-xl shadow-lg hover:bg-red-600 transition duration-200">
+                Red Card (-24hr)
+            </button>
+        </div>
+    </div>
+</body>
+</html>
